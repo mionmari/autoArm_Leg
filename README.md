@@ -10,3 +10,4 @@ Arm can be rigged as IK, FK, or with an IK/FK switch.
 Must have joints labelled hip, knee, and ankle (i.e. L_Hip, hip, Rhip).
 Select hip joint and then click "rig."
 Can adjust length of foot control.
+This script also creates the reverse foot joints (RevHeel, RevToe, etc.), so it is preferred to specify a custom prefix.
