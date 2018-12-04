@@ -1,0 +1,432 @@
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Searches a node and its descendants and returns the first name of the joint whose name contains 
+// a specified substring. Otherwise, returns an empty string.
+global proc string search(string $root, string $keyword){   
+    string $parsed = `tolower $root`;
+    
+    // Check the root first
+    if(`match $keyword $parsed` != "" || $keyword == "")
+        return $root;
+    
+    // Then check its descendants
+    string $descendants[] = `listRelatives -ad -type joint $root`;
+    
+    for($d in $descendants){  
+        $parsed = `tolower $d`;
+        
+        if(`match $keyword $parsed` != "" || $keyword == "")
+           return $d;
+    }
+    return "";
+}
+
+// Searches a node and its descendants and returns the name of the joint whose name contains 
+// a specified substring(s). Otherwise, returns an empty string.
+global proc string searchTwo(string $root, string $a, string $b){   
+    string $parsed = `tolower $root`;
+    
+    // Check the root first
+    if(
+       (`match $a $parsed` != "" || $a == "") &&
+       (`match $b $parsed` != "" || $b == ""))
+        return $root;
+    
+    // Then check its descendants
+    string $descendants[] = `listRelatives -ad -type joint $root`;
+    
+    for($d in $descendants){  
+        $parsed = `tolower $d`;
+        
+        if(
+            (`match $a $parsed` != "" || $a == "") &&
+            (`match $b $parsed` != "" || $b == ""))
+           return $d;
+    }
+    return "";
+}
+
+// Creates an IK handle from the start to end node. Returns the name of the handle and effector.
+// If rotatePlane is true, create an IK handle that uses a rotation plane solver.
+// Otherwise, create an IK handle that uses a single chain solver.
+global proc string[] createIK(string $name, string $start, string $end, int $rotatePlane){
+    // Check for valid input
+    if($rotatePlane != 0 && $rotatePlane != 1)
+        error("second arg is not 0 or 1");
+    
+    // Handle duplication
+    if(`objExists $name`){
+      int $ctr = 1;
+      while(`objExists ($name + $ctr)`){
+          $ctr++;
+      }
+      $name = $name + (string)$ctr;
+    } 
+    
+    $ikCommand = "ikHandle -sj " +  $start + " -ee "  + $end; 
+    
+    // Custom name for handle   
+    if($name != "")
+        $ikCommand += " -n " + $name; 
+        
+    // Use single chain solver (default is rotation plane solver).
+    if($rotatePlane == 0)
+        $ikCommand += "-sol ikSCsolver";
+        
+    string $results[] = eval($ikCommand);
+    return $results;     
+}
+
+// Modified from script uploaded on LMS.
+// This method creates FK controls for the joints or ikHandles selected.
+// The controls can be circular or square-shaped and can be either orient
+// or parent-constrainted. 
+global proc createCTRL(float $radius, string $customPrefix, int $isSquare, int $parentConstrain){
+    // get nodes in current selection, filtered by type 'joint'
+    string $nodes[];
+    // clear the selection
+    $nodes =`ls -sl -type joint`;  
+    
+    // If no joints selected, check for ikHandles
+    if(size($nodes) == 0){
+        $nodes =`ls -sl -type ikHandle`; 
+    }
+    select -cl;    
+    
+    string $prevNode = "";
+    for ($node in $nodes)
+    {
+        // Construct name a new NURBS circle control
+        string $newCircleName = $customPrefix + $node + "_CTRL";
+        string $newGroupName = $customPrefix + $node + "_CTRL_GRP";
+        
+        // Control with the same name already exists -> do not create the control
+        if(`objExists $newCircleName`) 
+            continue;
+        
+        // create the control circle
+        string $newCircle[];
+        
+        if($isSquare == 0)
+            $newCircle = `circle -c 0 0 0 -nr 1 0 0 -sw 360 -r $radius -d 3 -ut 0 -tol 0.01 -s 8 -ch 1 -name $newCircleName`;
+        else if($isSquare == 1)
+            $newCircle = `circle -c 0 0 0 -nr 1 0 0 -sw 360 -r 1 -d 1 -ut 0 -tol 0.01 -s 4 -ch 1  -name $newCircleName`;
+        
+        // select the circle
+        select -r $newCircle[0];
+        
+        // shift-select the joint
+        select -tgl $node;
+        
+        // match transforms to align the circle to the joint
+        matchTransform -pos;
+        matchTransform -rot;
+        select -cl;
+        
+        // create an empty group
+        $newGroup=`group -em -w -name $newGroupName`;
+        
+        // align the empty group to the joint
+        select -r $newGroup;
+        select -tgl $node;
+        matchTransform -pos -rot;
+        select -cl;
+        
+        // parent the control to the group
+        select -r $newCircleName;
+        select -tgl $newGroup;
+        parent;
+        
+        // parent buffer group to previous control we have just created
+        if($prevNode != "")
+            parent $newGroup $prevNode;
+        
+        // freeze transforms on the control
+        select -cl;
+        select -r $newCircleName;
+        makeIdentity -apply true -t 1 -r 1 -s 1 -n 0 -pn 1;	// identity matrix
+        
+        // create an orient constraint from the control to the joint
+        select -cl;
+        select -r $newCircleName;
+        select -tgl $node;
+        
+        print("Creating between " + $newCircleName + " and " + $node + "\n");
+        
+        // Apply orient or parent constraint
+        if($parentConstrain == 0){
+            doCreateOrientConstraintArgList 1 { "0","0","0","0","0","0","0","1","","1" };
+            orientConstraint -offset 0 0 0 -weight 1;
+        }
+        else if($parentConstrain == 1){
+            doCreateParentConstraintArgList 1 { "1","0","0","0","0","0","0","0","1","","1" };
+            parentConstraint -mo -weight 1;
+        }
+        
+        // Point to the previous node
+        $prevNode = $newCircleName;
+    }
+    
+    select -cl;
+}
+
+
+// Creates foot control (ankle). 
+// Has custom behavior different from creating a regular FK control.
+global proc createFootCTRL(string $node, string $pivot, float $length){
+     // name for a new NURBS circle control
+    string $newCircleName = $node + "_CTRL";
+    
+    // name for a new buffer group node to hold the control
+    string $newGroupName = $node + "_CTRL_GRP";
+    
+    // create the control circle
+    string $newCircle[] = `circle -c 0 0 0 -nr 1 0 0 -sw 360 -r 1 -d 1 -ut 0 -tol 0.01 -s 4 -ch 1 
+                            -name $newCircleName`;
+    // Adjust rotation
+    rotate -r -os -fo 45 0 90;
+        
+    makeIdentity -apply true -t 0 -r 1 -s 0 -n 0 -pn 1;    //freeze transformaitons
+    
+    float $amount = 1.3 + (($length - 1.3) / 1.3);
+    // Adjust scale
+    scale -r 1 1 $amount;
+    
+    // select the circle
+    select -r $newCircle[0];
+    
+    // shift-select the joint
+    select -tgl $pivot;
+    
+    // match transforms to align the circle to the joint
+    matchTransform -pos;
+    
+    // Adjust pivot point
+    float $pivotPos[] = `xform -q -t -ws $node`;
+    xform -worldSpace -pivots $pivotPos[0] $pivotPos[1] $pivotPos[2] $newCircleName; 
+    select -cl;
+    
+    // create an empty group
+    $newGroup=`group -em -w -name $newGroupName`;
+    
+    // align the empty group to the joint
+    select -r $newGroup;
+    select -tgl $node;
+    matchTransform -pos;
+    select -cl;
+    
+    // parent the control to the group
+    select -r $newCircleName;
+    select -tgl $newGroup;
+    parent;
+    
+    // freeze transforms on the control
+    select -cl;
+    select -r $newCircleName;
+    makeIdentity -apply true -t 1 -r 1 -s 1 -n 0 -pn 1;	// identity matrix
+    
+    // create a parent constraint from the control to the joint
+    select -cl;
+    select -r $newCircleName;
+    select -tgl $node;
+    
+    doCreateParentConstraintArgList 1 { "1","0","0","0","0","0","0","0","1","","1" };
+    parentConstraint -mo -weight 1;
+}
+
+// Automatically rigs a leg with reverse foot setup.
+global proc reverseFoot(string $customPrefix, float $length){    
+    // Part 1: Get the proper variables
+    // -------------------------------------------------
+    // Get selected root joint
+    string $nodes[]=`ls -sl -type joint`;
+    select -cl;                  // clear selection    
+    string $root = $nodes[0];    // Pop to get the root joint
+    
+    // Find appropriate joints (to be skinned)    
+    string $hip = search($root, "hip");
+    string $ankle = search($hip, "ankle");
+    string $ball = search ($ankle, "ball");
+    string $toe = search ($ball, "toe");
+    
+    if($hip == "" || $ankle == "" || $ball == "" || $toe == "")
+        error("Could not find joints. Selected root joint must have children joints labelled with hip, ankle, ball, and toe.");
+    
+    // Part 2: Create IK handles 
+    // -------------------------------------------------  
+    // Hip -> Ankle -- rotation plane solver
+    string $ankleIK[] = createIK($customPrefix + "Ankle_IK", $hip, $ankle, 1);
+    // Ankle -> Ball -- single plane solver
+    string $ballIK[] = createIK($customPrefix + "Ball_IK", $ankle, $ball, 0);
+    // Ball -> Toe -- single plane solver
+    string $toeIK[] = createIK($customPrefix + "Toe_IK", $ball, $toe, 0);
+    
+    // Part 3: Get reverse foot joints (if needed)
+    // -------------------------------------------------
+    
+    float $anklePos[] = `xform -q -t -ws $ankle`;
+    float $ballPos[] = `xform -q -t -ws $ball`;
+    select -cl;
+    
+    string $revHeel;
+    string $revToe;
+    string $revBall;
+    string $revAnkle;    
+    
+    // Determine rev heel position
+    $revHeelLoc = $anklePos[0] + " " + $ballPos[1] + " " + $anklePos[2];
+        
+    // Name reverse joints
+    $revHeel = $customPrefix + "RevHeel";            
+    $revToe = $customPrefix + "RevToe";
+    $revBall = $customPrefix + "RevBall";
+    $revAnkle = $customPrefix + "RevAnkle";
+    
+    // Create rev heel
+    $revHeel = eval("joint -n " + $revHeel + " -p " + $revHeelLoc +
+        " -rad " + `getAttr ($ball + ".radius")`);
+    // match transforms
+    select -add $ankle;
+    matchTransform -rot;
+    select -cl;
+    select $revHeel;
+    
+    // Create rev toe
+    $revToe = eval("joint -n " + $revToe +
+        " -rad " + `getAttr ($ball + ".radius")`);
+    // match transforms
+    select -add $toe;
+    matchTransform -pos -rot;
+    select -cl;
+    select $revToe;
+        
+    // Create rev ball
+    $revBall = eval("joint -n " + $revBall + 
+        " -rad " + `getAttr ($ball + ".radius")`);
+    // match transforms
+    select -add $ball;
+    matchTransform -pos -rot;
+    select -cl;
+    select $revBall;
+    
+    // Create rev ankle
+    $revAnkle = eval("joint -n " + $revAnkle + 
+        " -rad " + `getAttr ($ball + ".radius")`);
+    // match transforms
+    select -add $ankle;
+    matchTransform -pos -rot;
+    select -cl;
+    
+            
+    // Part 4: Parent IK handles under reverse foot joints
+    // -------------------------------------------------
+    parent $ankleIK[0] $revAnkle;
+    parent $ballIK[0] $revBall;
+    parent $toeIK[0] $revToe;
+    
+    // PArt 5: Create the FK CTRLs
+    // -------------------------------------------------
+    select -cl;
+    
+    select -add $revToe;
+    select -add $revBall;
+    createCTRL(0.5, "", 0, 0);
+    
+    createFootCTRL($revHeel, $ball, $length);
+    
+    parent ($revToe + "_CTRL_GRP") ($revHeel + "_CTRL");
+}
+
+// Helper function for reverse foot
+global proc reverseFootHelper(string $customPrefix, float $length){
+    string $nodes[]=`ls -sl -type joint`;
+    
+    if(size($nodes) < 1){
+        error("No joints selected");
+        return;
+    }
+    
+    for($n in $nodes){    
+        select -cl;
+        select $n;
+        reverseFoot($customPrefix, $length);
+    }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Call to reverseFoot
+global proc parseFootInputs(){
+    string $prefix = `textField -q -text footPrefix`;
+    float $length = `floatField -q -value length`;
+    
+    reverseFootHelper ($prefix, $length);
+}
+
+// Closes the window
+global proc closeFootWindow(){
+   deleteUI -window revFootWindow; 
+}
+
+// Undo reverse foot auto rig
+global proc undoFootRig(){
+    string $lastCommand = `undoInfo -q -undoName`;
+    
+    if($lastCommand == "parseFootInputs")
+        undo;
+}
+
+// Draw our UI window and then display it 
+global proc drawFootWindow(){
+    window 
+        -title "Reverse Foot"
+        revFootWindow;
+        
+        columnLayout;
+            // Padding
+            rowLayout -numberOfColumns 1;
+                text -label "" -height 5;
+            setParent..;
+           
+            // Foot length
+            rowLayout -numberOfColumns 2;
+                text -label "Foot Length:   " -al "right" -width 140;
+                floatField -value 2.0 -pre 3 length;
+            setParent..;        
+            
+            // Custom Prefix
+            rowLayout -numberOfColumns 2;
+                text -label "Custom Prefix:   " -al "right" -width 140;
+                textField footPrefix;
+                
+            setParent..;
+                
+            // Padding
+            rowLayout -numberOfColumns 1;
+                text -label "" -height 5;
+            setParent..;
+            
+            // Action butttons
+            rowLayout -numberOfColumns 4;
+              text -label "" -width 8;
+        			button -label "Rig" -width 125 -command parseFootInputs;
+        			button -label "Undo" -width 125 -command undoFootRig;
+        			button -label "Close" -width 125 -command closeFootWindow;
+    		    setParent ..;
+    		
+    		
+        
+    // Set window dimensions (width/height)
+    window -edit -widthHeight 400 100 revFootWindow;
+}
+
+// Open the window if it isn't already opened
+global proc openFootWindow(){    
+    int $checkExists = `window -q -exists revFootWindow`;
+    
+    if($checkExists == 0)
+        drawFootWindow();
+    showWindow revFootWindow;    
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Our calls
+openFootWindow();
