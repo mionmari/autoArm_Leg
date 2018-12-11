@@ -389,7 +389,7 @@ global proc drawFootWindow(){
             // Foot length
             rowLayout -numberOfColumns 2;
                 text -label "Foot Length:   " -al "right" -width 140;
-                floatField -value 2.0 -pre 3 length;
+                floatField -min 1.0 -value 2.0 -pre 3 length;
             setParent..;        
             
             // Custom Prefix
