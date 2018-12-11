@@ -1,7 +1,7 @@
 # autoArm_Leg
 Simple auto-rig for an IK/FK arm and reverse foot setup for legs. Undo button only "undos" the rig command if it was the last command done. 
 
-## U
+## autoArm
 Must have joints labelled shoulder, elbow, and wrist (i.e. L_Shoulder, shoulder, Rshoulder).
 Select clavicle or shoulder joint and then click "rig."
 Arm can be rigged as IK, FK, or with an IK/FK switch.
