@@ -1,5 +1,5 @@
 # autoArm_Leg
-Simple auto-rig for an IK/FK arm and reverse foot setup for legs. Undo button only "undos" the rig command wasi f it was the last command done. 
+Simple auto-rig for an IK/FK arm and reverse foot setup for legs. Undo button only "undos" the rig command if it was the last command done. 
 
 ## U
 Must have joints labelled shoulder, elbow, and wrist (i.e. L_Shoulder, shoulder, Rshoulder).
